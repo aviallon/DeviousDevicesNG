@@ -9,14 +9,23 @@ void DeviousDevices::HooksVirtual::Setup()
 {
     if (!_init)
     {
+        // AE 1.7.99 inserted two virtuals into PlayerInputHandler
+        // (ProcessMotionGesture / ProcessSixaxis at slots 2 and 3), shifting
+        // ProcessThumbstick 0x02 -> 0x04 and ProcessButton 0x04 -> 0x06.
+        // The hardcoded 0x02/0x04 patched the wrong slots on 1.7.x. v8's
+        // REL::VersionShift and PlayerInputHandler::kAE1799AddedVFuncCount are
+        // the same facts CommonLib uses to reach these virtuals.
+        const auto thumbstickSlot = REL::VersionShift(0x02, RE::PlayerInputHandler::kAE1799AddedVFuncCount, SKSE::RUNTIME_SSE_1_7_99);
+        const auto buttonSlot = REL::VersionShift(0x04, RE::PlayerInputHandler::kAE1799AddedVFuncCount, SKSE::RUNTIME_SSE_1_7_99);
+
         // Vtable of MovementHandler
         REL::Relocation<std::uintptr_t> vtbl_MovementHandler{RELOCATION_ID(263056, 208715).address()};
-        ProcessButton_old = vtbl_MovementHandler.write_vfunc(0x04, ProcessButton);
-        ProcessThumbstick_old = vtbl_MovementHandler.write_vfunc(0x02, ProcessThumbstick);
+        ProcessButton_old = vtbl_MovementHandler.write_vfunc(buttonSlot, ProcessButton);
+        ProcessThumbstick_old = vtbl_MovementHandler.write_vfunc(thumbstickSlot, ProcessThumbstick);
         
         // Vtable of AutoMoveHandler - 1418B6EA0 - xxxx/208725
         REL::Relocation<std::uintptr_t> vtbl_MovementHandlerAM{RELOCATION_ID(263061, 208725).address()};
-        ProcessButtonAM_old = vtbl_MovementHandlerAM.write_vfunc(0x04, ProcessButtonAM);
+        ProcessButtonAM_old = vtbl_MovementHandlerAM.write_vfunc(buttonSlot, ProcessButtonAM);
 
         REL::Relocation<std::uintptr_t> vtbl_player{RE::PlayerCharacter::VTABLE[0]};
         DrawWeaponMagicHands_old = vtbl_player.write_vfunc(REL::Module::GetRuntime() != REL::Module::Runtime::VR ? 0x0A6 : 0x0A8, DrawWeaponMagicHands);
