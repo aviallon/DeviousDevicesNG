@@ -1,15 +1,19 @@
 {
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
     "name": "commonlibsse-sample-plugin",
-    "description": "Sample SKSE plugin based on CommonLibSSE, for unified AE/SE/VR deployment.",
-    "homepage": "https://www.skyrimng.com",
+    "description": "NG Implementation of Devious Devices - SKSE plugin.",
+    "homepage": "https://github.com/IHateMyKite/DeviousDevicesNG",
     "license": "Apache-2.0",
     "features": {
         "plugin": {
             "description": "Build the SKSE plugin.",
             "dependencies": [
-                "commonlibsse-ng",
                 "detours",
+                "directxmath",
+                "directxtk",
+                "rapidcsv",
+                "spdlog",
+                "xbyak",
                 "boost-algorithm",
                 "boost-math",
                 "boost-lexical-cast",
@@ -48,7 +52,7 @@
             "version": "1.86.0"
         }
     ],
-    "builtin-baseline": "8cbab05e499a6fc3893c9a6125d51b6d7d877dcc",
+    "builtin-baseline": "ee12231b20c95013c6638d845d04c91559a1d1ff",
     "default-features": [
         "plugin",
         "tests"

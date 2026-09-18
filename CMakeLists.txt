@@ -85,39 +85,62 @@ message("\tTests: ${BUILD_TESTS}")
 ########################################################################################################################
 ## Configure target DLL
 ########################################################################################################################
-find_package(CommonLibSSE CONFIG REQUIRED)
+include(FetchContent)
+
+# ---------------------------------------------------------------------------
+# CommonLibSSE-NG (alandtse fork), pinned to the v8.2.0 commit
+# 25440f9a42cac6cc7c4f24c259d7f9abcac4e064.
+#
+# Consumed with FetchContent + add_subdirectory rather than a vcpkg port:
+# this is the consumption path the library itself builds and tests
+# (test_consumer / test_consumer_live in its repository), and it avoids the
+# installed-package export whose CommonLibSSEConfig.cmake only declares
+# find_dependency(spdlog) while the imported target's link interface also
+# needs Microsoft::DirectXTK. The dependency set comes from this project's
+# vcpkg manifest instead.
+#
+# v8.2.0 supports Skyrim 1.7.104 and Address Library format 5 natively:
+#   - REL::IDDB::Format::SSEv5 with a 64-byte-name format-5 header parser
+#     (include/REL/IDDB.h, added by PR #299, released in v6.4.0);
+#   - SKSE::RUNTIME_SSE_1_7_104 is defined (include/SKSE/Version.h);
+#   - Module::load_version() classifies AE by minor version >= 6, so 1.7.x
+#     is not mistaken for SE (include/REL/Module.h).
+# It also emits the Address Library V5 bit itself: StructCompatibility::
+# Independent is now kVersionIndependentEx_AddressLibraryV5 |
+# kVersionIndependentEx_NoStructUse (0x3) in include/SKSE/Interfaces.h, so
+# the CMake-generated plugin metadata no longer needs rewriting.
+#
+# VR is disabled on purpose: DDNG ships a flat SE/AE build, and turning VR off
+# avoids the (not fetched) openvr submodule and keeps CommonLibSSE building
+# from source instead of resolving a prebuilt bundle.
+# ---------------------------------------------------------------------------
+set(ENABLE_SKYRIM_SE ON CACHE BOOL "Build with Skyrim SE support" FORCE)
+set(ENABLE_SKYRIM_AE ON CACHE BOOL "Build with Skyrim AE support" FORCE)
+set(ENABLE_SKYRIM_VR OFF CACHE BOOL "Build with Skyrim VR support" FORCE)
+set(SKSE_SUPPORT_XBYAK ON CACHE BOOL "Use Xbyak for trampolines" FORCE)
+
+# BUILD_TESTS is read by CommonLibSSE as well; hide this project's value from
+# it so the (large) upstream Catch2 suite is not built here.
+set(DDNG_BUILD_TESTS "${BUILD_TESTS}")
+set(BUILD_TESTS OFF)
+FetchContent_Declare(
+        commonlibsse
+        GIT_REPOSITORY https://github.com/alandtse/CommonLibSSE-NG.git
+        GIT_TAG 25440f9a42cac6cc7c4f24c259d7f9abcac4e064  # v8.2.0
+        GIT_PROGRESS TRUE)
+FetchContent_MakeAvailable(commonlibsse)
+set(BUILD_TESTS "${DDNG_BUILD_TESTS}")
+unset(DDNG_BUILD_TESTS)
+
+include("${commonlibsse_SOURCE_DIR}/cmake/CommonLibSSE.cmake")
+
 find_library(Detours_LIBRARIES NAMES detours.lib)
 
-add_commonlibsse_plugin(${PROJECT_NAME} SOURCES ${headers} ${sources})
+add_commonlibsse_plugin(
+        ${PROJECT_NAME}
+        AUTHOR "Devious Devices Team"
+        SOURCES ${headers} ${sources})
 
-# ---------------------------------------------------------------------------
-# Skyrim 1.7.99+ / Address Library format 5
-#
-# SKSE 2.3.1 refuses to load an AddressLibraryPostAE plugin unless its version
-# data also sets kVersionIndependentEx_AddressLibraryV5 (bit 1 of the dword at
-# offset 0x304). CommonLibSSE-NG v3.7.0's CMake helper has no option for this:
-# it always writes StructCompatibility::Independent (value 1 = the NoStructUse
-# bit) into that slot, so the generated SKSEPlugin_Version misses the V5 bit and
-# SKSE logs "must be recompiled for new address library".
-#
-# The helper writes __${PROJECT_NAME}Plugin.cpp during configuration, so rewrite
-# its StructCompatibility value to NoStructUse | AddressLibraryV5 (1 | 2 = 3).
-# This can stay until CommonLibSSE-NG can express the V5 bit itself.
-# ---------------------------------------------------------------------------
-set(DDNG_PLUGIN_VERSION_SRC "${CMAKE_CURRENT_BINARY_DIR}/__${PROJECT_NAME}Plugin.cpp")
-if(EXISTS "${DDNG_PLUGIN_VERSION_SRC}")
-    file(READ "${DDNG_PLUGIN_VERSION_SRC}" DDNG_PLUGIN_VERSION_CONTENTS)
-    string(REPLACE
-            "SKSE::StructCompatibility::Independent"
-            "static_cast<SKSE::StructCompatibility>(0x3) /* NoStructUse | AddressLibraryV5 */"
-            DDNG_PLUGIN_VERSION_CONTENTS "${DDNG_PLUGIN_VERSION_CONTENTS}")
-    if(DDNG_PLUGIN_VERSION_CONTENTS MATCHES "SKSE::StructCompatibility::Independent")
-        message(FATAL_ERROR "Failed to set AddressLibraryV5 in ${DDNG_PLUGIN_VERSION_SRC}")
-    endif()
-    file(WRITE "${DDNG_PLUGIN_VERSION_SRC}" "${DDNG_PLUGIN_VERSION_CONTENTS}")
-else()
-    message(FATAL_ERROR "Expected generated plugin metadata at ${DDNG_PLUGIN_VERSION_SRC}")
-endif()
 add_library("${PROJECT_NAME}::${PROJECT_NAME}" ALIAS "${PROJECT_NAME}")
 
 target_include_directories(${PROJECT_NAME}
@@ -146,7 +169,6 @@ install(TARGETS ${PROJECT_NAME}
         DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 
 
-set(SKSE_USE_XBYAK ON)
 ########################################################################################################################
 ## Configure unit tests
 ########################################################################################################################
