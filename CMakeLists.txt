@@ -89,6 +89,35 @@ find_package(CommonLibSSE CONFIG REQUIRED)
 find_library(Detours_LIBRARIES NAMES detours.lib)
 
 add_commonlibsse_plugin(${PROJECT_NAME} SOURCES ${headers} ${sources})
+
+# ---------------------------------------------------------------------------
+# Skyrim 1.7.99+ / Address Library format 5
+#
+# SKSE 2.3.1 refuses to load an AddressLibraryPostAE plugin unless its version
+# data also sets kVersionIndependentEx_AddressLibraryV5 (bit 1 of the dword at
+# offset 0x304). CommonLibSSE-NG v3.7.0's CMake helper has no option for this:
+# it always writes StructCompatibility::Independent (value 1 = the NoStructUse
+# bit) into that slot, so the generated SKSEPlugin_Version misses the V5 bit and
+# SKSE logs "must be recompiled for new address library".
+#
+# The helper writes __${PROJECT_NAME}Plugin.cpp during configuration, so rewrite
+# its StructCompatibility value to NoStructUse | AddressLibraryV5 (1 | 2 = 3).
+# This can stay until CommonLibSSE-NG can express the V5 bit itself.
+# ---------------------------------------------------------------------------
+set(DDNG_PLUGIN_VERSION_SRC "${CMAKE_CURRENT_BINARY_DIR}/__${PROJECT_NAME}Plugin.cpp")
+if(EXISTS "${DDNG_PLUGIN_VERSION_SRC}")
+    file(READ "${DDNG_PLUGIN_VERSION_SRC}" DDNG_PLUGIN_VERSION_CONTENTS)
+    string(REPLACE
+            "SKSE::StructCompatibility::Independent"
+            "static_cast<SKSE::StructCompatibility>(0x3) /* NoStructUse | AddressLibraryV5 */"
+            DDNG_PLUGIN_VERSION_CONTENTS "${DDNG_PLUGIN_VERSION_CONTENTS}")
+    if(DDNG_PLUGIN_VERSION_CONTENTS MATCHES "SKSE::StructCompatibility::Independent")
+        message(FATAL_ERROR "Failed to set AddressLibraryV5 in ${DDNG_PLUGIN_VERSION_SRC}")
+    endif()
+    file(WRITE "${DDNG_PLUGIN_VERSION_SRC}" "${DDNG_PLUGIN_VERSION_CONTENTS}")
+else()
+    message(FATAL_ERROR "Expected generated plugin metadata at ${DDNG_PLUGIN_VERSION_SRC}")
+endif()
 add_library("${PROJECT_NAME}::${PROJECT_NAME}" ALIAS "${PROJECT_NAME}")
 
 target_include_directories(${PROJECT_NAME}
