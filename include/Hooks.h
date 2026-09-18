@@ -309,7 +309,14 @@ namespace DeviousDevices {
                 ERROR("Failed to install papyrus hook on EquipObject2");
             }
 
-            const uintptr_t loc_unequipTargetAddress = RE::Offset::ActorEquipManager::UnequipObject.address();
+            // RE::Offset::ActorEquipManager::UnequipObject was the pre-NG
+            // (v3) Address Library namespace. ActorEquipManager::UnequipObject
+            // is NOT virtual in CommonLibSSE-NG v8.2.0 (see
+            // RE/A/ActorEquipManager.h), so this stays a function-address
+            // DetourAttach, not a vtable hook. These are the very IDs v8.2.0's
+            // own src/RE/A/ActorEquipManager.cpp dispatches through:
+            //   REL::Relocation<func_t> func{ RELOCATION_ID(37945, 38901) };
+            const uintptr_t loc_unequipTargetAddress = RELOCATION_ID(37945, 38901).address();
             _UnequipObject = (OriginalUnequipObject)loc_unequipTargetAddress;
 
             DetourTransactionBegin();
