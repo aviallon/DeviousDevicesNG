@@ -43,10 +43,11 @@ jobs:
         id: battle_pass
         shell: bash
         run: echo "should_run=true" >> "$GITHUB_OUTPUT"
+
   build-skse:
     runs-on: windows-2022
     needs: check-changes
-    if: ${{ needs.check-changes.outputs.should_run >= 1 || (github.event_name == 'workflow_dispatch' && always()) }}
+    if: ${{ always() && (needs.check-changes.outputs.should_run >= 1 || github.event_name == 'workflow_dispatch') }}
 
     steps:
     - uses: actions/checkout@v4
@@ -84,7 +85,7 @@ jobs:
   build-papyrus:
     runs-on: windows-2022
     needs: check-changes
-    if: ${{ needs.check-changes.outputs.should_run >= 1 || (github.event_name == 'workflow_dispatch' && always()) }}
+    if: ${{ always() && (needs.check-changes.outputs.should_run >= 1 || github.event_name == 'workflow_dispatch') }}
 
     steps:
     - uses: actions/checkout@v4
@@ -112,10 +113,26 @@ jobs:
   compose-release:
     runs-on: ubuntu-latest
     needs: [build-skse, build-papyrus]
+    # always(): this job is needed on workflow_dispatch too, where check-changes
+    # is skipped (so the implicit success() would otherwise skip this job as
+    # well, and a dispatch run would never produce an archive).
+    if: ${{ always() && needs.build-skse.result == 'success' && needs.build-papyrus.result == 'success' }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Compute archive name
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(grep -oP '^\s*VERSION\s+\K[0-9]+(\.[0-9]+)*' CMakeLists.txt | head -n1)
+          [ -n "${version}" ] || version=0.0.0.0
+          sha7="${GITHUB_SHA:0:7}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha7=${sha7}" >> "$GITHUB_OUTPUT"
+          echo "archive=DDNG-${version}-${sha7}" >> "$GITHUB_OUTPUT"
 
       - name: Download DLL
         uses: actions/download-artifact@v4
@@ -123,45 +140,114 @@ jobs:
           name: ${{ env.PROJECT_NAME}}-DLL
           path: artifacts/${{ env.PROJECT_NAME }}-DLL
 
-      - name: Copy DLL to dist
-        run: cp -r artifacts/${{ env.PROJECT_NAME }}-DLL/* ${{ github.workspace }}/dist/SKSE/Plugins
-
       - name: Download PEX
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.PROJECT_NAME}}-PEX
           path: artifacts/${{ env.PROJECT_NAME }}-PEX
 
-      - name: Copy compiled Papyrus to dist
-        run: cp -r artifacts/${{ env.PROJECT_NAME }}-PEX/* ${{ github.workspace }}/dist/scripts
+      - name: Stage complete mod, zip deterministically
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="staging/DDNG"
+          mkdir -p "$stage"
 
-      - name: Upload release artifact
+          # Overlay files tracked in dist/ (Seq/, SKSE/, scripts/source/).
+          cp -a dist/. "$stage/"
+
+          # Root records. Upstream's DDNG.zip is only an overlay for an existing
+          # Devious Devices install and omits these; an archive that Amethyst can
+          # install standalone needs them.
+          cp -v ./*.esm ./*.esp ./*_KID.ini "$stage/"
+
+          # Build outputs.
+          mkdir -p "$stage/SKSE/Plugins"
+          cp -av artifacts/${PROJECT_NAME}-DLL/. "$stage/SKSE/Plugins/"
+          cp -av artifacts/${PROJECT_NAME}-PEX/. "$stage/scripts/"
+
+          # Reproducible archive: fixed mtimes, sorted entries, no extra fields.
+          find "$stage" -exec touch -h -d '2020-01-01T00:00:00Z' {} +
+          ( cd staging && find DDNG -type f | LC_ALL=C sort | zip -X -q "../${{ steps.meta.outputs.archive }}.zip" -@ )
+
+          echo "### Archive ${{ steps.meta.outputs.archive }}.zip" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          unzip -l "${{ steps.meta.outputs.archive }}.zip" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify archive contains the master files
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip="${{ steps.meta.outputs.archive }}.zip"
+          for f in "Devious Devices - Assets.esm" \
+                   "Devious Devices - Contraptions.esm" \
+                   "Devious Devices - Expansion.esm" \
+                   "Devious Devices - Integration.esm" \
+                   "Devious Devices SE patch.esp" \
+                   "Devious Devices_KID.ini" \
+                   "SKSE/Plugins/DeviousDevices.dll" \
+                   "SKSE/Plugins/DeviousDevices.ini"; do
+            unzip -l "$zip" | grep -qF "$f" || { echo "MISSING: $f"; exit 1; }
+          done
+          echo "all expected files present"
+
+      - name: Upload complete archive
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PROJECT_NAME}}
-          path: ${{ github.workspace }}/dist
+          name: ${{ env.PROJECT_NAME }}-archive
+          path: ${{ steps.meta.outputs.archive }}.zip
           retention-days: 90
 
+  publish-dispatch-release:
+    # Publish the archive as a GitHub Release on this repository (the fork).
+    # workflow_dispatch only, and not when the caller asked for a nightly.
+    runs-on: ubuntu-latest
+    needs: [compose-release]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && !inputs.releaseNightly && needs.compose-release.result == 'success' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PROJECT_NAME }}-archive
+          path: release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="ci-${GITHUB_SHA:0:7}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --prerelease \
+              --target "$GITHUB_SHA" \
+              --title "CI build ${{ github.sha }}" \
+              --notes "Automated build of commit ${{ github.sha }} (branch ${GITHUB_REF_NAME})."
+          fi
+          gh release upload "$tag" release/*.zip --clobber
+          echo "Release: $(gh release view "$tag" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          gh release view "$tag" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes  \(.url)"' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   release-nightly:
-    if: ${{ github.event_name == 'schedule' || inputs.releaseNightly }}
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.releaseNightly) && needs.compose-release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [build-skse, build-papyrus, compose-release]
+    needs: [compose-release]
     steps:
       - uses: actions/checkout@v4
     
-      - name: Download artifact
+      - name: Download archive
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.PROJECT_NAME }}
-          path: artifacts/${{ env.PROJECT_NAME }}
+          name: ${{ env.PROJECT_NAME }}-archive
+          path: release
 
-      - name: Zip files
-        run: >
-          cd artifacts/${{ env.PROJECT_NAME }} &&
-          zip -r -q '../../${{ env.PROJECT_NAME }}.zip' ./*
-          
       - uses: Kaven-Universe/github-action-current-date-time@v1
         id: date_rough
         with:
@@ -187,8 +273,9 @@ jobs:
       - name: Upload Release Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: >
-          gh release 
-          upload 
-          nightly-${{ inputs.releaseNightly && inputs.releaseName || steps.date_rough.outputs.time}} 
-          ${{ env.PROJECT_NAME }}.zip 
+          gh release
+          upload
+          nightly-${{ inputs.releaseNightly && inputs.releaseName || steps.date_rough.outputs.time}}
+          release/*.zip --clobber
