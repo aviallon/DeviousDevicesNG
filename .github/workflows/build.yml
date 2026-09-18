@@ -167,12 +167,16 @@ jobs:
           cp -av artifacts/${PROJECT_NAME}-PEX/. "$stage/scripts/"
 
           # Reproducible archive: fixed mtimes, sorted entries, no extra fields.
+          # Zip the *contents* of the staging dir so the archive root is the mod
+          # root (ESMs/ESP/KID.ini, SKSE/, Seq/, scripts/), like upstream's
+          # DDNG.zip, not a single top-level DDNG/ folder.
           find "$stage" -exec touch -h -d '2020-01-01T00:00:00Z' {} +
-          ( cd staging && find DDNG -type f | LC_ALL=C sort | zip -X -q "../${{ steps.meta.outputs.archive }}.zip" -@ )
+          out="$(pwd)/${{ steps.meta.outputs.archive }}.zip"
+          ( cd "$stage" && find . -type f -printf '%P\n' | LC_ALL=C sort | zip -X -q "$out" -@ )
 
           echo "### Archive ${{ steps.meta.outputs.archive }}.zip" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          unzip -l "${{ steps.meta.outputs.archive }}.zip" >> "$GITHUB_STEP_SUMMARY"
+          unzip -l "$out" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify archive contains the master files
